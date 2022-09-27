@@ -1,0 +1,748 @@
+---
+title: "Forest Vegetation Metrics - Graphical Summary"
+knit: (function(input_file, encoding) {
+    out_dir <- 'docs';
+    rmarkdown::render(input_file,
+      encoding=encoding,
+      output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(width = 500)
+```
+```{r lib, include=FALSE}
+library(RPostgres)
+library(ggplot2)
+library(ade4)
+library(vegan)
+library(gclus)
+library(cluster)
+library(FD)
+library(functional)
+library(ggdendro)
+library(dendextend)
+library(colorspace)
+library(labdsv)
+library(stats)
+library(indicspecies)
+library(fpc)
+library(goeveg)
+library(randomForest)
+library(reshape)
+library(car)
+library(dplyr)
+library(ggpubr)
+library(forcats)
+library(grid)
+library(gridExtra)
+```
+
+```{r conn, include=FALSE}
+#open the connection
+dw <- config::get("datawarehouse")
+
+conn <- DBI::dbConnect(odbc::odbc(),
+                      Driver = dw$driver,
+                      Server = dw$server,
+                      UID    = dw$uid,
+                      PWD    = dw$pwd,
+                      Port   = dw$port,
+                      Database = dw$database
+)
+```
+
+```{r query, include=FALSE}
+##query all VIBI-style plots (PCAP, wetland plots, VIBI refrence plots, 2019 low-LDI plots), metric values, VIBI-FQ scores and LDI scores
+vibi_fq_ldi <- dbGetQuery(conn, "SELECT * FROM nr_misc.plot_data_for_upland_vibi_development;")
+
+##query all PCAP first round (2010-2013) plots, metric values, VIBI-FQ scores and LDI scores
+##these plots all have cover values that include canopy trees (i.e, >5m)
+pcap1_fq_ldi <- dbGetQuery(conn, "SELECT * FROM nr_misc.plot_data_for_upland_vibi_development WHERE monitoring_event = '1';")
+colnames(pcap1_fq_ldi)
+
+##query all PCAP second round (2015-2018) plots, metric values, VIBI-FQ scores and LDI scores
+##these plots all have cover values that include canopy trees (i.e, >5m) ONLY for 2017 and 2018
+pcap2_fq_ldi <- dbGetQuery(conn, "SELECT * FROM nr_misc.plot_data_for_upland_vibi_development WHERE monitoring_event = '2';")
+```
+
+```{r filter, include=FALSE}
+##some filtered data##
+
+# remove wetland plots
+pcap1_fq_ldi_no_wet <- filter(pcap1_fq_ldi, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP') & !(group_description %in% c("Mesic Meadow (Ruderal)")))
+nrow(pcap1_fq_ldi_no_wet)
+colnames(pcap1_fq_ldi_no_wet)
+
+# remove LDI scores over 2.33 with is hte min outlier value
+pcap1_fq_ldi_2.33max <- filter(pcap1_fq_ldi, ldi_1k < 2.33)
+nrow(pcap1_fq_ldi_2.33max)
+
+# remove wetland plots, meadow plots and LDI scores over 2.33 which is the min outlier value
+pcap1_fq_ldi_2.33max_no_wet <- filter(pcap1_fq_ldi, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP') & ldi_1k < 2.33 & !(group_description %in% c("Mesic Meadow (Ruderal)")))
+nrow(pcap1_fq_ldi_2.33max_no_wet)
+
+# remove LDI scores over 1
+pcap1_fq_ldi_1max <- filter(pcap1_fq_ldi, ldi_1k < 1)
+nrow(pcap1_fq_ldi_1max)
+
+# remove wetland plots, meadow plots and LDI scores over 1
+pcap1_fq_ldi_1max_no_wet <- filter(pcap1_fq_ldi, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP') & ldi_1k < 1 & !(group_description %in% c("Mesic Meadow (Ruderal)")))
+nrow(pcap1_fq_ldi_1max_no_wet)
+```
+
+```{r , include=FALSE}
+# create a categorical variable that assigns each site to a disturbance category based on LDI quantiles
+pcap1_fq_ldi_no_wet <- pcap1_fq_ldi_no_wet %>%
+  mutate(ldi_cat = case_when(ldi_1k >= 1.0047 ~ 'high',
+                             ldi_1k >= 0.1213 ~ 'medium',
+                             ldi_1k < 0.1213 ~ 'low'),
+         sensitive_metric_value_asin = asin(sqrt(sensitive_metric_value)),
+         per_sensitive_no_trees_asin = asin(sqrt(per_sensitive_no_trees)),
+         tolerant_metric_value_asin = asin(sqrt(tolerant_metric_value)),
+         per_tolerant_no_trees_asin = asin(sqrt(per_tolerant_no_trees)),
+         bryophyte_metric_value_asin = asin(sqrt(bryophyte_metric_value)),
+         svp_cover_asin = asin(sqrt(svp_cover)))
+colnames(pcap1_fq_ldi_2.33max)
+```
+
+```{r , include=FALSE}
+pcap1_fq_ldi_2.33max_no_wet <- pcap1_fq_ldi_2.33max_no_wet %>%
+  mutate(
+         sensitive_metric_value_asin = asin(sqrt(sensitive_metric_value)),
+         per_sensitive_no_trees_asin = asin(sqrt(per_sensitive_no_trees)),
+         tolerant_metric_value_asin = asin(sqrt(tolerant_metric_value)),
+         per_tolerant_no_trees_asin = asin(sqrt(per_tolerant_no_trees)),
+         bryophyte_metric_value_asin = asin(sqrt(bryophyte_metric_value)),
+         svp_cover_asin = asin(sqrt(svp_cover)))
+```
+
+```{r , include=FALSE}
+pcap1_fq_ldi_1max_no_wet <- pcap1_fq_ldi_1max_no_wet %>%
+  mutate(
+         sensitive_metric_value_asin = asin(sqrt(sensitive_metric_value)),
+         per_sensitive_no_trees_asin = asin(sqrt(per_sensitive_no_trees)),
+         tolerant_metric_value_asin = asin(sqrt(tolerant_metric_value)),
+         per_tolerant_no_trees_asin = asin(sqrt(per_tolerant_no_trees)),
+         bryophyte_metric_value_asin = asin(sqrt(bryophyte_metric_value)),
+         svp_cover_asin = asin(sqrt(svp_cover)))
+```
+
+$~$
+
+$~$
+
+$~$
+
+## FQAI Score
+```{r , echo=FALSE, out.width="90%", fig.width=12, fig.height=4,fig.show='hold', fig.align='default', warning=FALSE}
+par(mfrow = c(1, 2))
+
+fqai.scatter <- ggplot(pcap1_fq_ldi_no_wet, aes(x=ldi_1k, y= fqai_score)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score") + ylab("FQAI Score")
+
+fqai.scatter.1max <- ggplot(pcap1_fq_ldi_1max_no_wet, aes(x=ldi_1k, y= fqai_score)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score - Sites w/ LDI < 1") + ylab("FQAI Score")
+
+grid.arrange(fqai.scatter, fqai.scatter.1max, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=10, fig.height=4,fig.show='hold', fig.align='default'}
+par(mfrow = c(1, 2))
+
+fqai.plot.2 <- ggplot(subset(pcap1_fq_ldi_no_wet, ldi_cat %in% c("low", "high")), aes(x=fct_relevel(ldi_cat, "low", "high"),fqai_score), y=fqai_score) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Disturbance Category") + ylab("FQAI Score")
+
+fqai.plot.3 <- ggplot(subset(pcap1_fq_ldi_no_wet, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP')), aes(x=fct_relevel(project_label, 'VIBI', 'VIBI-upland calibration', 'PCAP'),fqai_score), y=fqai_score) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Plot Type") + ylab("FQAI Score")
+
+grid.arrange(fqai.plot.2, fqai.plot.3, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=8, fig.height=6,fig.show='hold',fig.align='default'}
+#boxplot of FQAI Score score by community type
+ggplot(pcap1_fq_ldi_no_wet, aes(x=fct_reorder(factor(group_description),fqai_score, .fun = median, .desc = TRUE), y=fqai_score)) + geom_boxplot() + theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + xlab("Community Type") + ylab("FQAI Score")
+```
+
+$~$
+
+$~$
+
+$~$
+
+## % Sensitive
+```{r , echo=FALSE, out.width="90%", fig.width=12, fig.height=4,fig.show='hold', fig.align='default', warning=FALSE}
+par(mfrow = c(1, 2))
+
+sen.scatter <- ggplot(pcap1_fq_ldi_no_wet, aes(x=ldi_1k, y= sensitive_metric_value_asin)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score") + ylab("% Sensitive")
+
+sen.scatter.1max <- ggplot(pcap1_fq_ldi_1max_no_wet, aes(x=ldi_1k, y= sensitive_metric_value_asin)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score - Sites w/ LDI < 1") + ylab("% Sensitive")
+
+grid.arrange(sen.scatter, sen.scatter.1max, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=10, fig.height=4,fig.show='hold', fig.align='default'}
+par(mfrow = c(1, 2))
+
+sen.plot.2 <- ggplot(subset(pcap1_fq_ldi_no_wet, ldi_cat %in% c("low", "high")), aes(x=fct_relevel(ldi_cat, "low", "high"),sensitive_metric_value_asin), y=sensitive_metric_value_asin) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Disturbance Category") + ylab("% Sensitive")
+
+sen.plot.3 <- ggplot(subset(pcap1_fq_ldi_no_wet, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP')), aes(x=fct_relevel(project_label, 'VIBI', 'VIBI-upland calibration', 'PCAP'),sensitive_metric_value_asin), y=sensitive_metric_value_asin) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Plot Type") + ylab("% Sensitive")
+
+grid.arrange(sen.plot.2, sen.plot.3, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=8, fig.height=6,fig.show='hold',fig.align='default'}
+#boxplot of % Sensitive score by community type
+ggplot(pcap1_fq_ldi_no_wet, aes(x=fct_reorder(factor(group_description),sensitive_metric_value_asin, .fun = median, .desc = TRUE), y=sensitive_metric_value_asin)) + geom_boxplot() + theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + xlab("Community Type") + ylab("% Sensitive")
+```
+
+$~$
+
+$~$
+
+$~$
+
+## % Sensitive NO TREES
+```{r , echo=FALSE, out.width="90%", fig.width=12, fig.height=4,fig.show='hold', fig.align='default', warning=FALSE}
+par(mfrow = c(1, 2))
+
+sen.notrees.scatter <- ggplot(pcap1_fq_ldi_no_wet, aes(x=ldi_1k, y= per_sensitive_no_trees_asin)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score") + ylab("% Sensitive NO TREES")
+
+sen.notrees.scatter.1max <- ggplot(pcap1_fq_ldi_1max_no_wet, aes(x=ldi_1k, y= per_sensitive_no_trees_asin)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score - Sites w/ LDI < 1") + ylab("% Sensitive NO TREES")
+
+grid.arrange(sen.notrees.scatter, sen.notrees.scatter.1max, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=10, fig.height=4,fig.show='hold', fig.align='default'}
+par(mfrow = c(1, 2))
+
+sen.notrees.plot.2 <- ggplot(subset(pcap1_fq_ldi_no_wet, ldi_cat %in% c("low", "high")), aes(x=fct_relevel(ldi_cat, "low", "high"),per_sensitive_no_trees_asin), y=per_sensitive_no_trees_asin) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Disturbance Category") + ylab("% Sensitive NO TREES")
+
+sen.notrees.plot.3 <- ggplot(subset(pcap1_fq_ldi_no_wet, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP')), aes(x=fct_relevel(project_label, 'VIBI', 'VIBI-upland calibration', 'PCAP'),per_sensitive_no_trees_asin), y=per_sensitive_no_trees_asin) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Plot Type") + ylab("% Sensitive NO TREES")
+
+grid.arrange(sen.notrees.plot.2, sen.notrees.plot.3, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=8, fig.height=6,fig.show='hold',fig.align='default'}
+#boxplot of % Sensitive NO TREES score by community type
+ggplot(pcap1_fq_ldi_no_wet, aes(x=fct_reorder(factor(group_description),per_sensitive_no_trees_asin, .fun = median, .desc = TRUE), y=per_sensitive_no_trees_asin)) + geom_boxplot() + theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + xlab("Community Type") + ylab("% Sensitive NO TREES")
+```
+
+$~$
+
+$~$
+
+$~$
+
+## % Tolerant
+```{r , echo=FALSE, out.width="90%", fig.width=12, fig.height=4,fig.show='hold', fig.align='default', warning=FALSE}
+par(mfrow = c(1, 2))
+
+tol.scatter <- ggplot(pcap1_fq_ldi_no_wet, aes(x=ldi_1k, y= tolerant_metric_value_asin)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score") + ylab("% Tolerant")
+
+tol.scatter.1max <- ggplot(pcap1_fq_ldi_1max_no_wet, aes(x=ldi_1k, y= tolerant_metric_value_asin)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score - Sites w/ LDI < 1") + ylab("% Tolerant")
+
+grid.arrange(tol.scatter, tol.scatter.1max, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=10, fig.height=4,fig.show='hold', fig.align='default'}
+par(mfrow = c(1, 2))
+
+tol.plot.2 <- ggplot(subset(pcap1_fq_ldi_no_wet, ldi_cat %in% c("low", "high")), aes(x=fct_relevel(ldi_cat, "low", "high"),tolerant_metric_value_asin), y=tolerant_metric_value_asin) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Disturbance Category") + ylab("% Tolerant")
+
+tol.plot.3 <- ggplot(subset(pcap1_fq_ldi_no_wet, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP')), aes(x=fct_relevel(project_label, 'VIBI', 'VIBI-upland calibration', 'PCAP'),tolerant_metric_value_asin), y=tolerant_metric_value_asin) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Plot Type") + ylab("% Tolerant")
+
+grid.arrange(tol.plot.2, tol.plot.3, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=8, fig.height=6,fig.show='hold',fig.align='default'}
+#boxplot of % Tolerant score by community type
+ggplot(pcap1_fq_ldi_no_wet, aes(x=fct_reorder(factor(group_description),tolerant_metric_value_asin, .fun = median, .desc = TRUE), y=tolerant_metric_value_asin)) + geom_boxplot() + theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + xlab("Community Type") + ylab("% Tolerant")
+```
+
+$~$
+
+$~$
+
+$~$
+
+## % Tolerant NO TREES
+```{r , echo=FALSE, out.width="90%", fig.width=12, fig.height=4,fig.show='hold', fig.align='default', warning=FALSE}
+par(mfrow = c(1, 2))
+
+tol.notrees.scatter <- ggplot(pcap1_fq_ldi_no_wet, aes(x=ldi_1k, y= per_tolerant_no_trees_asin)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score") + ylab("% Tolerant NO TREES")
+
+tol.notrees.scatter.1max <- ggplot(pcap1_fq_ldi_1max_no_wet, aes(x=ldi_1k, y= per_tolerant_no_trees_asin)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score - Sites w/ LDI < 1") + ylab("% Tolerant NO TREES")
+
+grid.arrange(tol.notrees.scatter, tol.notrees.scatter.1max, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=10, fig.height=4,fig.show='hold', fig.align='default'}
+par(mfrow = c(1, 2))
+
+tol.notrees.plot.2 <- ggplot(subset(pcap1_fq_ldi_no_wet, ldi_cat %in% c("low", "high")), aes(x=fct_relevel(ldi_cat, "low", "high"),per_tolerant_no_trees_asin), y=per_tolerant_no_trees_asin) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Disturbance Category") + ylab("% Tolerant NO TREES")
+
+tol.notrees.plot.3 <- ggplot(subset(pcap1_fq_ldi_no_wet, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP')), aes(x=fct_relevel(project_label, 'VIBI', 'VIBI-upland calibration', 'PCAP'),per_tolerant_no_trees_asin), y=per_tolerant_no_trees_asin) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Plot Type") + ylab("% Tolerant NO TREES")
+
+grid.arrange(tol.notrees.plot.2, tol.notrees.plot.3, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=8, fig.height=6,fig.show='hold',fig.align='default'}
+#boxplot of % Tolerant NO TREES score by community type
+ggplot(pcap1_fq_ldi_no_wet, aes(x=fct_reorder(factor(group_description),per_tolerant_no_trees_asin, .fun = median, .desc = TRUE), y=per_tolerant_no_trees_asin)) + geom_boxplot() + theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + xlab("Community Type") + ylab("% Tolerant NO TREES")
+```
+
+$~$
+
+$~$
+
+$~$
+
+## Small Tree
+```{r , echo=FALSE, out.width="90%", fig.width=12, fig.height=4,fig.show='hold', fig.align='default', warning=FALSE}
+par(mfrow = c(1, 2))
+
+sm.tree.scatter <- ggplot(pcap1_fq_ldi_no_wet, aes(x=ldi_1k, y= small_tree_metric_value)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score") + ylab("Small Tree")
+
+sm.tree.scatter.1max <- ggplot(pcap1_fq_ldi_1max_no_wet, aes(x=ldi_1k, y= small_tree_metric_value)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score - Sites w/ LDI < 1") + ylab("Small Tree")
+
+grid.arrange(sm.tree.scatter, sm.tree.scatter.1max, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=10, fig.height=4,fig.show='hold', fig.align='default'}
+par(mfrow = c(1, 2))
+
+sm.tree.plot.2 <- ggplot(subset(pcap1_fq_ldi_no_wet, ldi_cat %in% c("low", "high")), aes(x=fct_relevel(ldi_cat, "low", "high"),small_tree_metric_value), y=small_tree_metric_value) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Disturbance Category") + ylab("Small Tree")
+
+sm.tree.plot.3 <- ggplot(subset(pcap1_fq_ldi_no_wet, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP')), aes(x=fct_relevel(project_label, 'VIBI', 'VIBI-upland calibration', 'PCAP'),small_tree_metric_value), y=small_tree_metric_value) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Plot Type") + ylab("Small Tree")
+
+grid.arrange(sm.tree.plot.2, sm.tree.plot.3, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=8, fig.height=6,fig.show='hold',fig.align='default'}
+#boxplot of Small Tree score by community type
+ggplot(pcap1_fq_ldi_no_wet, aes(x=fct_reorder(factor(group_description),small_tree_metric_value, .fun = median, .desc = TRUE), y=small_tree_metric_value)) + geom_boxplot() + theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + xlab("Community Type") + ylab("Small Tree")
+```
+
+$~$
+
+$~$
+
+$~$
+
+## Subcanopy IV
+```{r , echo=FALSE, out.width="90%", fig.width=12, fig.height=4,fig.show='hold', fig.align='default', warning=FALSE}
+par(mfrow = c(1, 2))
+
+sub.iv.scatter <- ggplot(pcap1_fq_ldi_no_wet, aes(x=ldi_1k, y= subcanopy_iv)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score") + ylab("Subcanopy IV")
+
+sub.iv.scatter.1max <- ggplot(pcap1_fq_ldi_1max_no_wet, aes(x=ldi_1k, y= subcanopy_iv)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score - Sites w/ LDI < 1") + ylab("Subcanopy IV")
+
+grid.arrange(sub.iv.scatter, sub.iv.scatter.1max, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=10, fig.height=4,fig.show='hold', fig.align='default'}
+par(mfrow = c(1, 2))
+
+sub.iv.plot.2 <- ggplot(subset(pcap1_fq_ldi_no_wet, ldi_cat %in% c("low", "high")), aes(x=fct_relevel(ldi_cat, "low", "high"),subcanopy_iv), y=subcanopy_iv) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Disturbance Category") + ylab("Subcanopy IV")
+
+sub.iv.plot.3 <- ggplot(subset(pcap1_fq_ldi_no_wet, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP')), aes(x=fct_relevel(project_label, 'VIBI', 'VIBI-upland calibration', 'PCAP'),subcanopy_iv), y=subcanopy_iv) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Plot Type") + ylab("Subcanopy IV")
+
+grid.arrange(sub.iv.plot.2, sub.iv.plot.3, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=8, fig.height=6,fig.show='hold',fig.align='default'}
+#boxplot of Subcanopy IV score by community type
+ggplot(pcap1_fq_ldi_no_wet, aes(x=fct_reorder(factor(group_description),subcanopy_iv, .fun = median, .desc = TRUE), y=subcanopy_iv)) + geom_boxplot() + theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + xlab("Community Type") + ylab("Subcanopy IV")
+```
+
+$~$
+
+$~$
+
+$~$
+
+## Canopy IV
+```{r , echo=FALSE, out.width="90%", fig.width=12, fig.height=4,fig.show='hold', fig.align='default', warning=FALSE}
+par(mfrow = c(1, 2))
+
+can.iv.scatter <- ggplot(pcap1_fq_ldi_no_wet, aes(x=ldi_1k, y= canopy_iv)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score") + ylab("Canopy IV")
+
+can.iv.scatter.1max <- ggplot(pcap1_fq_ldi_1max_no_wet, aes(x=ldi_1k, y= canopy_iv)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score - Sites w/ LDI < 1") + ylab("Canopy IV")
+
+grid.arrange(can.iv.scatter, can.iv.scatter.1max, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=10, fig.height=4,fig.show='hold', fig.align='default'}
+par(mfrow = c(1, 2))
+
+can.iv.plot.2 <- ggplot(subset(pcap1_fq_ldi_no_wet, ldi_cat %in% c("low", "high")), aes(x=fct_relevel(ldi_cat, "low", "high"),canopy_iv), y=canopy_iv) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Disturbance Category") + ylab("Canopy IV")
+
+can.iv.plot.3 <- ggplot(subset(pcap1_fq_ldi_no_wet, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP')), aes(x=fct_relevel(project_label, 'VIBI', 'VIBI-upland calibration', 'PCAP'),canopy_iv), y=canopy_iv) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Plot Type") + ylab("Canopy IV")
+
+grid.arrange(can.iv.plot.2, can.iv.plot.3, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=8, fig.height=6,fig.show='hold',fig.align='default'}
+#boxplot of Canopy IV score by community type
+ggplot(pcap1_fq_ldi_no_wet, aes(x=fct_reorder(factor(group_description),canopy_iv, .fun = median, .desc = TRUE), y=canopy_iv)) + geom_boxplot() + theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + xlab("Community Type") + ylab("Canopy IV")
+```
+
+$~$
+
+$~$
+
+$~$
+
+## Mean C of C
+```{r , echo=FALSE, out.width="90%", fig.width=12, fig.height=4,fig.show='hold', fig.align='default', warning=FALSE}
+par(mfrow = c(1, 2))
+
+avg.cofc.scatter <- ggplot(pcap1_fq_ldi_no_wet, aes(x=ldi_1k, y= avg_cofc)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score") + ylab("Mean C of C")
+
+avg.cofc.scatter.1max <- ggplot(pcap1_fq_ldi_1max_no_wet, aes(x=ldi_1k, y= avg_cofc)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score - Sites w/ LDI < 1") + ylab("Mean C of C")
+
+grid.arrange(avg.cofc.scatter, avg.cofc.scatter.1max, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=10, fig.height=4,fig.show='hold', fig.align='default'}
+par(mfrow = c(1, 2))
+
+avg.cofc.plot.2 <- ggplot(subset(pcap1_fq_ldi_no_wet, ldi_cat %in% c("low", "high")), aes(x=fct_relevel(ldi_cat, "low", "high"),avg_cofc), y=avg_cofc) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Disturbance Category") + ylab("Mean C of C")
+
+avg.cofc.plot.3 <- ggplot(subset(pcap1_fq_ldi_no_wet, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP')), aes(x=fct_relevel(project_label, 'VIBI', 'VIBI-upland calibration', 'PCAP'),avg_cofc), y=avg_cofc) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Plot Type") + ylab("Mean C of C")
+
+grid.arrange(avg.cofc.plot.2, avg.cofc.plot.3, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=8, fig.height=6,fig.show='hold',fig.align='default'}
+#boxplot of Mean C of C score by community type
+ggplot(pcap1_fq_ldi_no_wet, aes(x=fct_reorder(factor(group_description),avg_cofc, .fun = median, .desc = TRUE), y=avg_cofc)) + geom_boxplot() + theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + xlab("Community Type") + ylab("Mean C of C")
+```
+
+$~$
+
+$~$
+
+$~$
+
+## Abundance-Weighted C of C
+```{r , echo=FALSE, out.width="90%", fig.width=12, fig.height=4,fig.show='hold', fig.align='default', warning=FALSE}
+par(mfrow = c(1, 2))
+
+w.cofc.scatter <- ggplot(pcap1_fq_ldi_no_wet, aes(x=ldi_1k, y= abundance_weighted_cofc)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score") + ylab("Abundance-Weighted C of C")
+
+w.cofc.scatter.1max <- ggplot(pcap1_fq_ldi_1max_no_wet, aes(x=ldi_1k, y= abundance_weighted_cofc)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score - Sites w/ LDI < 1") + ylab("Abundance-Weighted C of C")
+
+grid.arrange(w.cofc.scatter, w.cofc.scatter.1max, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=10, fig.height=4,fig.show='hold', fig.align='default'}
+par(mfrow = c(1, 2))
+
+w.cofc.plot.2 <- ggplot(subset(pcap1_fq_ldi_no_wet, ldi_cat %in% c("low", "high")), aes(x=fct_relevel(ldi_cat, "low", "high"),abundance_weighted_cofc), y=abundance_weighted_cofc) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Disturbance Category") + ylab("Abundance-Weighted C of C")
+
+w.cofc.plot.3 <- ggplot(subset(pcap1_fq_ldi_no_wet, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP')), aes(x=fct_relevel(project_label, 'VIBI', 'VIBI-upland calibration', 'PCAP'),abundance_weighted_cofc), y=abundance_weighted_cofc) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Plot Type") + ylab("Abundance-Weighted C of C")
+
+grid.arrange(w.cofc.plot.2, w.cofc.plot.3, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=8, fig.height=6,fig.show='hold',fig.align='default'}
+#boxplot of Abundance-Weighted C of C score by community type
+ggplot(pcap1_fq_ldi_no_wet, aes(x=fct_reorder(factor(group_description),abundance_weighted_cofc, .fun = median, .desc = TRUE), y=abundance_weighted_cofc)) + geom_boxplot() + theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + xlab("Community Type") + ylab("Abundance-Weighted C of C")
+```
+
+$~$
+
+$~$
+
+$~$
+
+## Abundance-Weighted C of C Value NO TREES
+```{r , echo=FALSE, out.width="90%", fig.width=12, fig.height=4,fig.show='hold', fig.align='default', warning=FALSE}
+par(mfrow = c(1, 2))
+
+w.cofc.notrees.scatter <- ggplot(pcap1_fq_ldi_no_wet, aes(x=ldi_1k, y= abundance_weighted_cofc_no_trees)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score") + ylab("Abundance-Weighted C of C Value NO TREES")
+
+w.cofc.notrees.scatter.1max <- ggplot(pcap1_fq_ldi_1max_no_wet, aes(x=ldi_1k, y= abundance_weighted_cofc_no_trees)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score - Sites w/ LDI < 1") + ylab("Abundance-Weighted C of C Value NO TREES")
+
+grid.arrange(w.cofc.notrees.scatter, w.cofc.notrees.scatter.1max, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=10, fig.height=4,fig.show='hold', fig.align='default'}
+par(mfrow = c(1, 2))
+
+w.cofc.notrees.plot.2 <- ggplot(subset(pcap1_fq_ldi_no_wet, ldi_cat %in% c("low", "high")), aes(x=fct_relevel(ldi_cat, "low", "high"),abundance_weighted_cofc_no_trees), y=abundance_weighted_cofc_no_trees) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Disturbance Category") + ylab("Abundance-Weighted C of C Value NO TREES")
+
+w.cofc.notrees.plot.3 <- ggplot(subset(pcap1_fq_ldi_no_wet, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP')), aes(x=fct_relevel(project_label, 'VIBI', 'VIBI-upland calibration', 'PCAP'),abundance_weighted_cofc_no_trees), y=abundance_weighted_cofc_no_trees) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Plot Type") + ylab("Abundance-Weighted C of C Value NO TREES")
+
+grid.arrange(w.cofc.notrees.plot.2, w.cofc.notrees.plot.3, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=8, fig.height=6,fig.show='hold',fig.align='default'}
+#boxplot of Abundance-Weighted C of C Value NO TREES score by community type
+ggplot(pcap1_fq_ldi_no_wet, aes(x=fct_reorder(factor(group_description),abundance_weighted_cofc_no_trees, .fun = median, .desc = TRUE), y=abundance_weighted_cofc_no_trees)) + geom_boxplot() + theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + xlab("Community Type") + ylab("Abundance-Weighted C of C Value NO TREES")
+```
+
+$~$
+
+$~$
+
+$~$
+
+## SVP Cover
+```{r , echo=FALSE, out.width="90%", fig.width=12, fig.height=4,fig.show='hold', fig.align='default', warning=FALSE}
+par(mfrow = c(1, 2))
+
+svp.cov.scatter <- ggplot(pcap1_fq_ldi_no_wet, aes(x=ldi_1k, y= svp_cover)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score") + ylab("SVP Cover")
+
+svp.cov.scatter.1max <- ggplot(pcap1_fq_ldi_1max_no_wet, aes(x=ldi_1k, y= svp_cover)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score - Sites w/ LDI < 1") + ylab("SVP Cover")
+
+grid.arrange(svp.cov.scatter, svp.cov.scatter.1max, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=10, fig.height=4,fig.show='hold', fig.align='default'}
+par(mfrow = c(1, 2))
+
+svp.cov.plot.2 <- ggplot(subset(pcap1_fq_ldi_no_wet, ldi_cat %in% c("low", "high")), aes(x=fct_relevel(ldi_cat, "low", "high"),svp_cover), y=svp_cover) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Disturbance Category") + ylab("SVP Cover")
+
+svp.cov.plot.3 <- ggplot(subset(pcap1_fq_ldi_no_wet, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP')), aes(x=fct_relevel(project_label, 'VIBI', 'VIBI-upland calibration', 'PCAP'),svp_cover), y=svp_cover) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Plot Type") + ylab("SVP Cover")
+
+grid.arrange(svp.cov.plot.2, svp.cov.plot.3, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=8, fig.height=6,fig.show='hold',fig.align='default'}
+#boxplot of SVP Cover score by community type
+ggplot(pcap1_fq_ldi_no_wet, aes(x=fct_reorder(factor(group_description),svp_cover, .fun = median, .desc = TRUE), y=svp_cover)) + geom_boxplot() + theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + xlab("Community Type") + ylab("SVP Cover")
+```
+
+$~$
+
+$~$
+
+$~$
+
+## Non-Graminoid Monocots
+```{r , echo=FALSE, out.width="90%", fig.width=12, fig.height=4,fig.show='hold', fig.align='default', warning=FALSE}
+par(mfrow = c(1, 2))
+
+mono.scatter <- ggplot(pcap1_fq_ldi_no_wet, aes(x=ldi_1k, y= non_graminoid_monocots)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score") + ylab("Non-Graminoid Monocots")
+
+mono.scatter.1max <- ggplot(pcap1_fq_ldi_1max_no_wet, aes(x=ldi_1k, y= non_graminoid_monocots)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score - Sites w/ LDI < 1") + ylab("Non-Graminoid Monocots")
+
+grid.arrange(mono.scatter, mono.scatter.1max, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=10, fig.height=4,fig.show='hold', fig.align='default'}
+par(mfrow = c(1, 2))
+
+mono.plot.2 <- ggplot(subset(pcap1_fq_ldi_no_wet, ldi_cat %in% c("low", "high")), aes(x=fct_relevel(ldi_cat, "low", "high"),non_graminoid_monocots), y=non_graminoid_monocots) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Disturbance Category") + ylab("Non-Graminoid Monocots")
+
+mono.plot.3 <- ggplot(subset(pcap1_fq_ldi_no_wet, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP')), aes(x=fct_relevel(project_label, 'VIBI', 'VIBI-upland calibration', 'PCAP'),non_graminoid_monocots), y=non_graminoid_monocots) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Plot Type") + ylab("Non-Graminoid Monocots")
+
+grid.arrange(mono.plot.2, mono.plot.3, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=8, fig.height=6,fig.show='hold',fig.align='default'}
+#boxplot of Non-Graminoid Monocots score by community type
+ggplot(pcap1_fq_ldi_no_wet, aes(x=fct_reorder(factor(group_description),non_graminoid_monocots, .fun = median, .desc = TRUE), y=non_graminoid_monocots)) + geom_boxplot() + theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + xlab("Community Type") + ylab("Non-Graminoid Monocots")
+```
+
+$~$
+
+$~$
+
+$~$
+
+## VIBI-FQ Diversity
+```{r , echo=FALSE, out.width="90%", fig.width=12, fig.height=4,fig.show='hold', fig.align='default', warning=FALSE}
+par(mfrow = c(1, 2))
+
+fq.div.scatter <- ggplot(pcap1_fq_ldi_no_wet, aes(x=ldi_1k, y= vibi_fq_diversity)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score") + ylab("VIBI-FQ Diversity")
+
+fq.div.scatter.1max <- ggplot(pcap1_fq_ldi_1max_no_wet, aes(x=ldi_1k, y= vibi_fq_diversity)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score - Sites w/ LDI < 1") + ylab("VIBI-FQ Diversity")
+
+grid.arrange(fq.div.scatter, fq.div.scatter.1max, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=10, fig.height=4,fig.show='hold', fig.align='default'}
+par(mfrow = c(1, 2))
+
+fq.div.plot.2 <- ggplot(subset(pcap1_fq_ldi_no_wet, ldi_cat %in% c("low", "high")), aes(x=fct_relevel(ldi_cat, "low", "high"),vibi_fq_diversity), y=vibi_fq_diversity) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Disturbance Category") + ylab("VIBI-FQ Diversity")
+
+fq.div.plot.3 <- ggplot(subset(pcap1_fq_ldi_no_wet, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP')), aes(x=fct_relevel(project_label, 'VIBI', 'VIBI-upland calibration', 'PCAP'),vibi_fq_diversity), y=vibi_fq_diversity) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Plot Type") + ylab("VIBI-FQ Diversity")
+
+grid.arrange(fq.div.plot.2, fq.div.plot.3, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=8, fig.height=6,fig.show='hold',fig.align='default'}
+#boxplot of VIBI-FQ Diversity score by community type
+ggplot(pcap1_fq_ldi_no_wet, aes(x=fct_reorder(factor(group_description),vibi_fq_diversity, .fun = median, .desc = TRUE), y=vibi_fq_diversity)) + geom_boxplot() + theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + xlab("Community Type") + ylab("VIBI-FQ Diversity")
+```
+
+$~$
+
+$~$
+
+$~$
+
+## VIBI-FQ Dominance
+```{r , echo=FALSE, out.width="90%", fig.width=12, fig.height=4,fig.show='hold', fig.align='default', warning=FALSE}
+par(mfrow = c(1, 2))
+
+fq.dom.scatter <- ggplot(pcap1_fq_ldi_no_wet, aes(x=ldi_1k, y= vibi_fq_dominance)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score") + ylab("VIBI-FQ Dominance")
+
+fq.dom.scatter.1max <- ggplot(pcap1_fq_ldi_1max_no_wet, aes(x=ldi_1k, y= vibi_fq_dominance)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score - Sites w/ LDI < 1") + ylab("VIBI-FQ Dominance")
+
+grid.arrange(fq.dom.scatter, fq.dom.scatter.1max, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=10, fig.height=4,fig.show='hold', fig.align='default'}
+par(mfrow = c(1, 2))
+
+fq.dom.plot.2 <- ggplot(subset(pcap1_fq_ldi_no_wet, ldi_cat %in% c("low", "high")), aes(x=fct_relevel(ldi_cat, "low", "high"),vibi_fq_dominance), y=vibi_fq_dominance) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Disturbance Category") + ylab("VIBI-FQ Dominance")
+
+fq.dom.plot.3 <- ggplot(subset(pcap1_fq_ldi_no_wet, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP')), aes(x=fct_relevel(project_label, 'VIBI', 'VIBI-upland calibration', 'PCAP'),vibi_fq_dominance), y=vibi_fq_dominance) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Plot Type") + ylab("VIBI-FQ Dominance")
+
+grid.arrange(fq.dom.plot.2, fq.dom.plot.3, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=8, fig.height=6,fig.show='hold',fig.align='default'}
+#boxplot of VIBI-FQ Dominance score by community type
+ggplot(pcap1_fq_ldi_no_wet, aes(x=fct_reorder(factor(group_description),vibi_fq_dominance, .fun = median, .desc = TRUE), y=vibi_fq_dominance)) + geom_boxplot() + theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + xlab("Community Type") + ylab("VIBI-FQ Dominance")
+```
+
+$~$
+
+$~$
+
+$~$
+
+## VIBI-FQ Dominance NO TREES
+```{r , echo=FALSE, out.width="90%", fig.width=12, fig.height=4,fig.show='hold', fig.align='default', warning=FALSE}
+par(mfrow = c(1, 2))
+
+fq.dom.notrees.scatter <- ggplot(pcap1_fq_ldi_no_wet, aes(x=ldi_1k, y= vibi_fq_dominance_no_trees)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score") + ylab("VIBI-FQ Dominance NO TREES")
+
+fq.dom.notrees.scatter.1max <- ggplot(pcap1_fq_ldi_1max_no_wet, aes(x=ldi_1k, y= vibi_fq_dominance_no_trees)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score - Sites w/ LDI < 1") + ylab("VIBI-FQ Dominance NO TREES")
+
+grid.arrange(fq.dom.notrees.scatter, fq.dom.notrees.scatter.1max, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=10, fig.height=4,fig.show='hold', fig.align='default'}
+par(mfrow = c(1, 2))
+
+fq.dom.notrees.plot.2 <- ggplot(subset(pcap1_fq_ldi_no_wet, ldi_cat %in% c("low", "high")), aes(x=fct_relevel(ldi_cat, "low", "high"),vibi_fq_dominance_no_trees), y=vibi_fq_dominance_no_trees) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Disturbance Category") + ylab("VIBI-FQ Dominance NO TREES")
+
+fq.dom.notrees.plot.3 <- ggplot(subset(pcap1_fq_ldi_no_wet, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP')), aes(x=fct_relevel(project_label, 'VIBI', 'VIBI-upland calibration', 'PCAP'),vibi_fq_dominance_no_trees), y=vibi_fq_dominance_no_trees) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Plot Type") + ylab("VIBI-FQ Dominance NO TREES")
+
+grid.arrange(fq.dom.notrees.plot.2, fq.dom.notrees.plot.3, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=8, fig.height=6,fig.show='hold',fig.align='default'}
+#boxplot of VIBI-FQ Dominance NO TREES score by community type
+ggplot(pcap1_fq_ldi_no_wet, aes(x=fct_reorder(factor(group_description),vibi_fq_dominance_no_trees, .fun = median, .desc = TRUE), y=vibi_fq_dominance_no_trees)) + geom_boxplot() + theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + xlab("Community Type") + ylab("VIBI-FQ Dominance NO TREES")
+```
+
+$~$
+
+$~$
+
+$~$
+
+## VIBI-FQ
+```{r , echo=FALSE, out.width="90%", fig.width=12, fig.height=4,fig.show='hold', fig.align='default', warning=FALSE}
+par(mfrow = c(1, 2))
+
+fq.scatter <- ggplot(pcap1_fq_ldi_no_wet, aes(x=ldi_1k, y= vibi_fq)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score") + ylab("VIBI-FQ")
+
+fq.scatter.1max <- ggplot(pcap1_fq_ldi_1max_no_wet, aes(x=ldi_1k, y= vibi_fq)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score - Sites w/ LDI < 1") + ylab("VIBI-FQ")
+
+grid.arrange(fq.scatter, fq.scatter.1max, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=10, fig.height=4,fig.show='hold', fig.align='default'}
+par(mfrow = c(1, 2))
+
+fq.plot.2 <- ggplot(subset(pcap1_fq_ldi_no_wet, ldi_cat %in% c("low", "high")), aes(x=fct_relevel(ldi_cat, "low", "high"),vibi_fq), y=vibi_fq) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Disturbance Category") + ylab("VIBI-FQ")
+
+fq.plot.3 <- ggplot(subset(pcap1_fq_ldi_no_wet, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP')), aes(x=fct_relevel(project_label, 'VIBI', 'VIBI-upland calibration', 'PCAP'),vibi_fq), y=vibi_fq) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Plot Type") + ylab("VIBI-FQ")
+
+grid.arrange(fq.plot.2, fq.plot.3, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=8, fig.height=6,fig.show='hold',fig.align='default'}
+#boxplot of VIBI-FQ score by community type
+ggplot(pcap1_fq_ldi_no_wet, aes(x=fct_reorder(factor(group_description),vibi_fq, .fun = median, .desc = TRUE), y=vibi_fq)) + geom_boxplot() + theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + xlab("Community Type") + ylab("VIBI-FQ")
+```
+
+$~$
+
+$~$
+
+$~$
+
+## VIBI-FQ NO TREES
+```{r , echo=FALSE, out.width="90%", fig.width=12, fig.height=4,fig.show='hold', fig.align='default', warning=FALSE}
+par(mfrow = c(1, 2))
+
+fq.notrees.scatter <- ggplot(pcap1_fq_ldi_no_wet, aes(x=ldi_1k, y= vibi_fq_no_trees)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score") + ylab("VIBI-FQ NO TREES")
+
+fq.notrees.scatter.1max <- ggplot(pcap1_fq_ldi_1max_no_wet, aes(x=ldi_1k, y= vibi_fq_no_trees)) +
+  geom_point(size=2) + geom_smooth(method = "lm", se = FALSE) + xlab("LDI Score - Sites w/ LDI < 1") + ylab("VIBI-FQ NO TREES")
+
+grid.arrange(fq.notrees.scatter, fq.notrees.scatter.1max, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=10, fig.height=4,fig.show='hold', fig.align='default'}
+par(mfrow = c(1, 2))
+
+fq.notrees.plot.2 <- ggplot(subset(pcap1_fq_ldi_no_wet, ldi_cat %in% c("low", "high")), aes(x=fct_relevel(ldi_cat, "low", "high"),vibi_fq_no_trees), y=vibi_fq_no_trees) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Disturbance Category") + ylab("VIBI-FQ NO TREES")
+
+fq.notrees.plot.3 <- ggplot(subset(pcap1_fq_ldi_no_wet, project_label %in% c('VIBI', 'VIBI-upland calibration', 'PCAP')), aes(x=fct_relevel(project_label, 'VIBI', 'VIBI-upland calibration', 'PCAP'),vibi_fq_no_trees), y=vibi_fq_no_trees) + geom_boxplot() + theme(axis.text.x  = element_text(vjust=0.5)) + xlab("Plot Type") + ylab("VIBI-FQ NO TREES")
+
+grid.arrange(fq.notrees.plot.2, fq.notrees.plot.3, ncol=2)
+```
+
+```{r , echo=FALSE, out.width="90%", fig.width=8, fig.height=6,fig.show='hold',fig.align='default'}
+#boxplot of VIBI-FQ NO TREES score by community type
+ggplot(pcap1_fq_ldi_no_wet, aes(x=fct_reorder(factor(group_description),vibi_fq_no_trees, .fun = median, .desc = TRUE), y=vibi_fq_no_trees)) + geom_boxplot() + theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + xlab("Community Type") + ylab("VIBI-FQ NO TREES")
+```
+
+$~$
+
+$~$
+
+$~$
