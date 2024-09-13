@@ -1,11 +1,18 @@
 ---
 title: "Forest Vegetation Metrics - Graphical Summary"
+author: "Author: John Reinier"
+date: "Last Updated: `r Sys.Date()`"
 knit: (function(input_file, encoding) {
     out_dir <- 'docs';
     rmarkdown::render(input_file,
       encoding=encoding,
       output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
-output: html_document
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+    theme: flatly
 ---
 
 ```{r setup, include=FALSE}
@@ -38,6 +45,17 @@ library(forcats)
 library(grid)
 library(gridExtra)
 ```
+
+## Introduction/Background
+
+- There is a need to establish metrics and/or an index to assess the quality/intactness of upland communities, particularly forests
+
+- Process similar to the Ohio VIBI development process (Mack citations)
+
+- Evaluate the performance of several metrics against human disturbance gradient
+
+- Use Landscape Disturbance Index (LDI) as disturbance gradient
+
 
 ```{r conn, include=FALSE}
 #open the connection
@@ -75,7 +93,7 @@ pcap1_fq_ldi_no_wet <- filter(pcap1_fq_ldi, project_label %in% c('VIBI', 'VIBI-u
 nrow(pcap1_fq_ldi_no_wet)
 colnames(pcap1_fq_ldi_no_wet)
 
-# remove LDI scores over 2.33 with is hte min outlier value
+# remove LDI scores over 2.33 which is the min outlier value
 pcap1_fq_ldi_2.33max <- filter(pcap1_fq_ldi, ldi_1k < 2.33)
 nrow(pcap1_fq_ldi_2.33max)
 
